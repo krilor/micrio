@@ -2,7 +2,7 @@
 
 > [!Warning]
 >
-> This is a unfinished README. You probably don't want to read it in its current
+> This is a unfinished article. You probably don't want to read it in its current
 > state.
 
 So I was reading this article by Shayon Mukherjee yesterday called
@@ -148,8 +148,8 @@ and race to be the first to claim the `waffle` spot. Enter, the pile!
 We now need to start putting objects Somewhere Else™️, and I'm calling that the
 pile. We create two directories for our files:
 
-* `pile` - temporary location for files-being-written
-* `shelf` - where we put the files for display
+* `/pile` - temporary location for files-being-written
+* `/shelf` - where we put the files for display
 
 Now we modify the process to write files with unique names to the pile, e.g.
 using [UUID](https://everyuuid.com/) so it becomes `pile/waffle-<uuid>`. Kari
@@ -162,14 +162,64 @@ choosing `link` just because it looks like a good idea.
 
 The procedure is now.
 
-* write file in pile
-* md5 digest and etag
-* link from shelf to pile
-* rm (aka unlink) in pile
+1. write file in pile
+2. md5 digest and etag
+3. link from shelf to pile
+4. rm (aka unlink) in pile
 
-But does this work for compare and serve?
+But does this work for compare and swap?
 
-## TO BE CONTINUED
+## Conditional overwrite
+
+So, by now we have a file structure like this:
+
+* `/pile/` - so much empty
+* `/shelf/waffle{user.etag=md5a}` - our file with etag as xattr
+
+Ola wants to do a compare and swap aka `PUT If-Match: md5a`. They can do
+
+1. getfattr user.etag and compare (match!)
+2. write file in pile
+3. md5 digest and etag
+4. rename from pile to shelf
+
+But again? What if concurrent Kari is doing the same stuff at the same time? We
+have a race! Thinking about it, all we want is *exclusivity on creating the
+successor file*. Maybe we can leverage the same strategy as before: first to the
+finish line with a link. But to do that, we probably want the it to be a
+symlink. Let's try that.
+
+Below is the dir structure when a client has "prepared" a new file and added the
+md5 etag. Note that I've introduced a `box` where we keep earlier versions of files.
+
+* `/pile/uuid-b{user.etag=md5b}` - the new temp file
+* `/box/waffle/00000000000000000000000000000000{user.etag=md5a}` - the first
+  file (no pre-existing file at create time)
+* `/shelf/waffle -> /box/waffle/00000000000000000000000000000000` - symlink from
+  the shelf to the box.
+
+The next steps are.
+
+1. move `/pile/uuid-b` to `/box/waffle/md5a` (using link/unlink to get EEXISTS)
+2. move the `/shelf/waffle` symlink to `/box/waffle/md5a`
+
+This works, but we have one major problem! What if the process dies between
+steps 1 and 2? Since the work is non-atomic, we risk two things:
+
+1. Having a dangling file in the box, effectively blocking future PUTs
+2. Inconsistent file serving. Serving and old file.
+
+How can we deal with that?
+
+Well, for point 1, we have forward-referencing files in the box, so we can
+recover by following the references (and moving the symlink).
+For the other one? Well, I'm stuck!
+
+## TO BE CONTINUED!?
+
+## Filename restrictions due to directory structure
+
+TODO
 
 ## License
 
