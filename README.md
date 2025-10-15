@@ -2,8 +2,11 @@
 
 > [!Warning]
 >
-> This is a unfinished article. You probably don't want to read it in its current
-> state.
+> This article is just a documentation of a personal learning and thought
+> process. There is no code and I am not sure if this is even something worth
+> pursuing at all.
+>
+> Consider yourself warned - here we go!
 
 So I was reading this article by Shayon Mukherjee yesterday called
 [An MVCC-like columnar table on S3 with constant-time deletes](https://www.shayon.dev/post/2025/277/an-mvcc-like-columnar-table-on-s3-with-constant-time-deletes/).
@@ -211,15 +214,76 @@ steps 1 and 2? Since the work is non-atomic, we risk two things:
 
 How can we deal with that?
 
-Well, for point 1, we have forward-referencing files in the box, so we can
-recover by following the references (and moving the symlink).
-For the other one? Well, I'm stuck!
+Our only bet is the forward-referencing files in the box. The next file for any
+given file will be stored as that files ETag. This means that to check if a file
+has been replaced we can check for the existence of a file (in the box) named
+equal to the ETag. So if we have the file `/box/waffle/a{user.etag=b}`, then
+checking for the file `/box/waffle/b` allows us to confirm if it is the latest
+or not. One downside is of course that we require the clients to do that check
+😞 But hey, I think we can live with that.
 
-## TO BE CONTINUED!?
+The forward-referencing files also allows us to recover/correct the inconsistent
+symlink. But to ensure that such an operation does not overwrite each other we
+need some kind of mutex on the symlink - and `flock` is probably our best bet
+for that.
+
+At this point I think we are close to something that could work - but I can
+think of one major flaw with this design; what if the contents of the file is
+restored to a previous version? ETag collision and our whole scheme falls to
+pieces! Enter: running version numbers!
+
+## Running version numbers
+
+Instead of naming our files in the box after ETags we can simply name them
+`0`,`1`,`2` etc. This provides the same benefit as the ETag but in addition is
+safe from collision and is forward-and-backward referencing.
+
+In hindsight it is be pretty obvious that we should use running version
+number for file names rather than ETags. I just didn't think about it.
+
+If a client has a file and wants to do a `PUT If-Match: md5a /waffle`, then we
+end up here once the client has checked that the current file is md5a and file
+is "prepared" in the pile:
+
+* `/pile/uuid-b{user.etag=md5b}` - the new temp file
+* `/box/waffle/0{user.etag=md5a}` - the first file
+* `/shelf/waffle -> /box/waffle/0` - symlink from the shelf to the box.
+
+The next steps are then
+
+* increment version number (current filename + 1 = 1)
+* flock on `/shelf/waffle`
+* move `/pile/uuid-b` to `/box/waffle/1` (using link/unlink to get EEXISTS)
+* move `/shelf/waffle` symlink to `/box/waffle/1`
+* release lock
+
+It isn't purrfect, but it is the best I can come up with at this point 🤷🏻‍♂️
 
 ## Filename restrictions due to directory structure
 
-TODO
+We still have a problem tho. We cannot name files anything we want. Consider if
+I have a file I want to call `/waffle/0`. That space is taken in the box by
+version `0` of `/waffle`. What can we do? One obvious thing is to hash the
+object path. So rather having `/waffle` in the box, we can use the `sha256sum`
+or similar of the name. This alleviates the problem and allows us to use
+whatever filename we want.
+
+## Summary
+
+I set out to figure out a strategy for handling concurrent conditional writes
+and reads on a local file system. I was able to conjure up a way to do it, but
+it isn't nice and requires both writers and readers to do special/additional
+steps.
+
+I'm especially disappointed that clients need to do an additional forward check
+to ensure consistency, even for read. I would love it if a reader could just
+read the symlink and be sure that it was the latest file. If readers are not
+concerned about consistency and tolerates an old file, then using the symlink
+directly is also an option.
+
+I learned quite a few things and I was an interesting problem to reason about.
+Its just too bad I have no actual need for this stuff so I will probably never
+implement it..
 
 ## License
 
